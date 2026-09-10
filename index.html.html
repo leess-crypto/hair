@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>내모(毛)의 꿈</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #fafafa;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        h1 {
+            margin: 5px 0;
+            font-size: 28px;
+            color: #333;
+            border-bottom: 3px dashed #333;
+            padding-bottom: 5px;
+        }
+        #game-container {
+            position: relative;
+            width: 600px;
+            height: 450px;
+            background: #fff;
+            border: 4px solid #333;
+            box-shadow: 6px 6px 0px #333;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        canvas {
+            display: block;
+            background: #ffffe0;
+        }
+        #webcam-video {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 120px;
+            height: 90px;
+            border: 2px solid #333;
+            transform: scaleX(-1); /* 좌우 반전 */
+            opacity: 0.6;
+            z-index: 10;
+        }
+        .ui-panel {
+            margin-top: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            display: flex;
+            gap: 20px;
+        }
+        .instructions {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+    </style>
+
+    <!-- MediaPipe Face Mesh & Camera Utils -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <h1>🧑‍🦲 내모(毛)의 꿈 🧑‍🦲</h1>
+    <div id="game-container">
+        <canvas id="gameCanvas" width="600" height="450"></canvas>
+        <video id="webcam-video" playsinline></video>
+    </div>
+
+    <div class="ui-panel">
+        <span id="ui-hairs">머리털: 🌿🌿🌿🌿🌿 (5개)</span>
+        <span id="ui-score">점수: 0점</span>
+    </div>
+    <div class="instructions">
+        💡 웹캠으로 얼굴을 좌우로 움직이거나, <b>키보드 방향키(←, →)</b>로 조작하세요! (클릭하여 시작)
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const uiHairs = document.getElementById('ui-hairs');
+        const uiScore = document.getElementById('ui-score');
+        const videoElement = document.getElementById('webcam-video');
+
+        // 게임 상태
+        let gameState = 'START'; // START, PLAYING, GAMEOVER
+        let score = 0;
+        let hairs = 5;
+        let hitEffectTimer = 0;
+        let buffTimer = 0;
+
+        // 플레이어 (졸라맨 아바타)
+        const player = {
+            x: 300,
+            y: 350,
+            radius: 30,
+            speed: 6,
+            targetX: 300
+        };
+
+        // 아이템 배열
+        let items = [];
+        const itemTypes = [
+            { type: 'good', name: '콩', emoji: '🫘', score: 100 },
+            { type: 'good', name: '샴푸', emoji: '🧴', score: 200 },
+            { type: 'bad', name: '드라이기', emoji: '🔥', damage: 1 },
+            { type: 'bad', name: '왁스', emoji: '🧪', damage: 1 }
+        ];
+
+        let keys = { ArrowLeft: false, ArrowRight: false };
+
+        // 키보드 이벤트 리스너
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'ArrowLeft') keys.ArrowLeft = true;
+            if (e.code === 'ArrowRight') keys.ArrowRight = true;
+            if (gameState === 'START' || gameState === 'GAMEOVER') {
+                resetGame();
+                gameState = 'PLAYING';
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowLeft') keys.ArrowLeft = false;
+            if (e.code === 'ArrowRight') keys.ArrowRight = false;
+        });
+
+        // 마우스 클릭으로도 시작 가능
+        document.getElementById('game-container').addEventListener('click', () => {
+            if (gameState === 'START' || gameState === 'GAMEOVER') {
+                resetGame();
+                gameState = 'PLAYING';
+            }
+        });
+
+        function resetGame() {
+            score = 0;
+            hairs = 5;
+            items = [];
+            player.x = 300;
+            player.targetX = 300;
+        }
+
+        // 아이템 생성 스폰 타이머
+        let spawnCounter = 0;
+        function spawnItem() {
+            spawnCounter++;
+            if (spawnCounter > 45) { // 스폰 주기
+                spawnCounter = 0;
+                const template = itemTypes[Math.floor(Math.random() * itemTypes.length)];
+                items.push({
+                    x: Math.random() * (canvas.width - 60) + 30,
+                    y: -30,
+                    speed: Math.random() * 2 + 2.5,
+                    ...template
+                });
+            }
+        }
+
+        // 업데이트 로직
+        function update() {
+            if (gameState !== 'PLAYING') return;
+
+            // 키보드 이동 처리 (웹캠이 안 될 때 백업)
+            if (keys.ArrowLeft) player.targetX -= player.speed;
+            if (keys.ArrowRight) player.targetX += player.speed;
+
+            // 부드러운 이동 (Lerp)
+            player.x += (player.targetX - player.x) * 0.2;
+
+            // 화면 경계 제한
+            if (player.x < 40) player.x = 40;
+            if (player.x > canvas.width - 40) player.x = canvas.width - 40;
+            player.targetX = player.x; // 웹캠과 키보드 충돌 방지용 동기화
+
+            // 이펙트 타이머 감소
+            if (hitEffectTimer > 0) hitEffectTimer--;
+            if (buffTimer > 0) buffTimer--;
+
+            // 아이템 업데이트 및 충돌 체크
+            for (let i = items.length - 1; i >= 0; i--) {
+                let item = items[i];
+                item.y += item.speed;
+
+                // 플레이어와 충돌 체크 (원형 거리 계산)
+                let dist = Math.hypot(player.x - item.x, player.y - item.y);
+                if (dist < player.radius + 20) {
+                    if (item.type === 'good') {
+                        score += item.score;
+                        buffTimer = 30; // 굵어지는 버프 효과
+                        // 최대 머리털은 5개로 제한
+                        if (hairs < 5) hairs++; 
+                    } else {
+                        hairs -= item.damage;
+                        hitEffectTimer = 20; // 타격 피격 효과
+                        if (hairs <= 0) {
+                            hairs = 0;
+                            gameState = 'GAMEOVER';
+                        }
+                    }
+                    items.splice(i, 1);
+                    continue;
+                }
+
+                // 화면 아래로 떨어진 아이템 제거
+                if (item.y > canvas.height + 30) {
+                    items.splice(i, 1);
+                }
+            }
+
+            spawnItem();
+            updateUI();
+        }
+
+        function updateUI() {
+            let hairStr = '🌿'.repeat(hairs) + '❌'.repeat(5 - hairs);
+            uiHairs.innerHTML = `머리털: ${hairStr} (${hairs}개)`;
+            uiScore.innerHTML = `점수: ${score}점`;
+        }
+
+        // 렌더링(그리기) 로직
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 낙서풍 배경 격자 라인 (갬성용)
+            ctx.strokeStyle = '#f0f0c0';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < canvas.width; i += 40) {
+                ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke();
+            }
+            for (let i = 0; i < canvas.height; i += 40) {
+                ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke();
+            }
+
+            if (gameState === 'START') {
+                ctx.fillStyle = '#333';
+                ctx.font = 'bold 32px "Courier New"';
+                ctx.textAlign = 'center';
+                ctx.fillText("내모(毛)의 꿈", canvas.width / 2, 160);
+                
+                ctx.font = '16px "Courier New"';
+                ctx.fillText("웹캠 앞에서 고개를 좌우로 움직여보세요!", canvas.width / 2, 220);
+                ctx.fillText("검은콩과 샴푸를 먹고, 드라이기와 왁스를 피하세요!", canvas.width / 2, 255);
+                
+                ctx.fillStyle = '#ff4500';
+                ctx.fillText("▶ 화면을 클릭하거나 키를 누르면 시작!", canvas.width / 2, 330);
+                return;
+            }
+
+            if (gameState === 'GAMEOVER') {
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.15)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = '#d90429';
+                ctx.font = 'bold 45px "Courier New"';
+                ctx.textAlign = 'center';
+                ctx.fillText("G A M E   O V E R", canvas.width / 2, 180);
+
+                ctx.fillStyle = '#333';
+                ctx.font = '20px "Courier New"';
+                ctx.fillText(`최종 점수: ${score}점`, canvas.width / 2, 240);
+                ctx.fillText("머리털이 모두 소멸했습니다... 흑흑", canvas.width / 2, 275);
+
+                ctx.fillStyle = '#000';
+                ctx.font = '15px "Courier New"';
+                ctx.fillText("▶ 다시 시작하려면 클릭 또는 키를 누르세요", canvas.width / 2, 340);
+                return;
+            }
+
+            // --- 게임 플레이 중 렌더링 ---
+
+            // 1. 아이템들 그리기
+            items.forEach(item => {
+                ctx.font = '28px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(item.emoji, item.x, item.y);
+            });
+
+            // 2. 졸라맨 아바타 그리기
+            ctx.save();
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = hitEffectTimer > 0 ? '#ff0000' : '#333'; // 피격시 빨간색 선
+
+            let charWidthFactor = buffTimer > 0 ? 1.5 : 1.0; // 버프 먹었을 때 굵기 효과
+
+            // 머리 (원)
+            ctx.beginPath();
+            ctx.arc(player.x, player.y - 20, 25 * charWidthFactor, 0, Math.PI * 2);
+            ctx.fillStyle = hitEffectTimer > 0 ? '#ffcccc' : '#fff';
+            ctx.fill();
+            ctx.stroke();
+
+            // 얼굴 표정 (눈, 입)
+            ctx.fillStyle = '#333';
+            ctx.beginPath();
+            ctx.arc(player.x - 8, player.y - 25, 3, 0, Math.PI * 2); // 왼쪽 눈
+            ctx.arc(player.x + 8, player.y - 25, 3, 0, Math.PI * 2); // 오른쪽 눈
+            ctx.fill();
+
+            // 입 (슬픈 표정 or 긴장 표정)
+            ctx.beginPath();
+            ctx.arc(player.x, player.y - 12, 6, 0, Math.PI);
+            ctx.stroke();
+
+            // 머리카락 (생명력에 따라 개수 표현: 최대 5가닥)
+            for (let i = 0; i < hairs; i++) {
+                let offsetX = (i - 2) * 8;
+                ctx.beginPath();
+                // 삐삐쭉 솟은 머리털 스타일
+                ctx.moveTo(player.x + offsetX, player.y - 45);
+                ctx.lineTo(player.x + offsetX + (i % 2 === 0 ? 3 : -3), player.y - 65 - (i * 2));
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = '#222';
+                ctx.stroke();
+            }
+
+            // 몸통 (졸라맨 스타일 선)
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = hitEffectTimer > 0 ? '#ff0000' : '#333';
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y + 5);
+            ctx.lineTo(player.x, player.y + 60); // 몸통
+            ctx.moveTo(player.x, player.y + 20);
+            ctx.lineTo(player.x - 20, player.y + 40); // 왼팔
+            ctx.moveTo(player.x, player.y + 20);
+            ctx.lineTo(player.x + 20, player.y + 40); // 오른팔
+            ctx.moveTo(player.x, player.y + 60);
+            ctx.lineTo(player.x - 15, player.y + 95); // 왼다리
+            ctx.moveTo(player.x, player.y + 60);
+            ctx.lineTo(player.x + 15, player.y + 95); // 오른다리
+            ctx.stroke();
+
+            ctx.restore();
+        }
+
+        // 메인 게임 루프
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        // --- MediaPipe Face Mesh 연동 설정 ---
+        function onResults(results) {
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                // 코끝(Landmark index 1) 또는 얼굴 중심 X 좌표 활용
+                const nose = landmarks[1]; 
+                
+                // nose.x 값은 0.0 ~ 1.0 (좌우 반전 고려하여 매핑)
+                // 화면 좌표(0 ~ 600)로 변환
+                let targetScreenX = (1 - nose.x) * canvas.width;
+                
+                // 부드럽게 타겟 위치 갱신
+                player.targetX = targetScreenX;
+            }
+        }
+
+        const faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: false,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({ image: videoElement });
+            },
+            width: 320,
+            height: 240
+        });
+
+        // 웹캠 구동 시도 (실패 시 콘솔에 로그만 남기고 키보드 모드로 원활히 플레이 가능)
+        camera.start().catch(err => {
+            console.warn("웹캠을 사용할 수 없어 키보드 모드로 동작합니다.", err);
+        });
+
+        // 게임 시작
+        loop();
+    </script>
+</body>
+</html>
